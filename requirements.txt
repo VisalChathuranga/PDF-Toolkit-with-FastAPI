@@ -24,3 +24,7 @@ uvicorn[standard]>=0.30.0
 python-multipart>=0.0.9   # for file uploads
 pydantic>=2.7
 PyJWT 
+python-jose[cryptography] 
+python-multipart 
+passlib 
+bcrypt

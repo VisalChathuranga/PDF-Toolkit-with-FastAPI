@@ -1,62 +1,79 @@
 # auth.py
-import os
-import time
+import os, json, uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Dict
+from typing import Dict
 
-import jwt  # PyJWT
-from fastapi import Depends, HTTPException, status, Header
+from fastapi import Depends, HTTPException, status
+from fastapi import Path as FPath
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from pydantic import BaseModel
 
-# -------------------------------------------------------------------
-# CONFIG
-# -------------------------------------------------------------------
-# Set these via env in production
-JWT_SECRET = os.getenv("PDF_API_JWT_SECRET", "change-this-in-prod")
-JWT_ALG = "HS256"
-JWT_EXP_HOURS = int(os.getenv("PDF_API_JWT_EXP_HOURS", "12"))
+# ---- Config from env (very simple) -------------------------------------------
+# Linux/macOS:  export PDF_API_CLIENTS='{"demo":"demo","myapp":"supersecret"}'
+# Windows PS:   $env:PDF_API_CLIENTS='{"demo":"demo","myapp":"supersecret"}'
+_CLIENTS_RAW = os.getenv("PDF_API_CLIENTS", '{"demo":"demo"}')
+try:
+    CLIENTS: Dict[str, str] = json.loads(_CLIENTS_RAW)
+except json.JSONDecodeError:
+    CLIENTS = {"demo": "demo"}
 
-# Very simple client registry (replace with DB/SSO/etc. in prod)
-# client_id -> client_secret
-CLIENTS: Dict[str, str] = {
-    "demo_client": "demo_secret",
-    # "acme_corp": "supersecret123",
-}
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("PDF_API_TOKEN_TTL_MIN", "60"))
 
-# -------------------------------------------------------------------
-# JWT helpers
-# -------------------------------------------------------------------
-def create_access_token(client_id: str, expires_delta: Optional[timedelta] = None) -> str:
-    expire = datetime.now(tz=timezone.utc) + (expires_delta or timedelta(hours=JWT_EXP_HOURS))
-    payload = {"sub": client_id, "exp": expire}
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+# ---- Simple in-memory session store ------------------------------------------
+# session_id -> {"client_id": str, "expires_at": datetime}
+SESSIONS: Dict[str, Dict] = {}
 
-def decode_access_token(token: str) -> dict:
-    try:
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
 
-# -------------------------------------------------------------------
-# FastAPI dependency: get current client from Bearer JWT
-# -------------------------------------------------------------------
-def get_current_client(authorization: Optional[str] = Header(default=None)) -> str:
+def _new_session_id() -> str:
+    return str(uuid.uuid4())
+
+# ---- Models -------------------------------------------------------------------
+class HandshakeResponse(BaseModel):
+    session_id: str
+    expires_at: datetime
+
+# ---- Security (HTTP Basic) ----------------------------------------------------
+basic_scheme = HTTPBasic(auto_error=True)
+
+def _verify_basic(credentials: HTTPBasicCredentials) -> str:
     """
-    Validate Authorization: Bearer <token> and return client_id (sub).
+    Return client_id if username/password is valid, else raise 401.
     """
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
-    token = authorization.split(" ", 1)[1].strip()
-    payload = decode_access_token(token)
-    client_id = payload.get("sub")
-    if not client_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
+    client_id = credentials.username or ""
+    password  = credentials.password or ""
+    expected  = CLIENTS.get(client_id)
+    if expected is None or expected != password:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password",
+            headers={"WWW-Authenticate": "Basic"},
+        )
     return client_id
 
-# -------------------------------------------------------------------
-# Handshake validator (client_id + client_secret)
-# -------------------------------------------------------------------
-def validate_client_credentials(client_id: str, client_secret: str) -> bool:
-    expected = CLIENTS.get(client_id)
-    return expected is not None and expected == client_secret
+# ---- Handshake: creates a session_id with 1-hour TTL --------------------------
+async def handshake_basic(credentials: HTTPBasicCredentials = Depends(basic_scheme)) -> HandshakeResponse:
+    client_id = _verify_basic(credentials)
+    session_id = _new_session_id()
+    expires_at = _now_utc() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    SESSIONS[session_id] = {"client_id": client_id, "expires_at": expires_at}
+    return HandshakeResponse(session_id=session_id, expires_at=expires_at)
+
+# ---- Dependency used by protected endpoints -----------------------------------
+async def require_basic_session(
+    credentials: HTTPBasicCredentials = Depends(basic_scheme),
+    session_id: str = FPath(..., description="Session ID from path"),
+):
+    client_id = _verify_basic(credentials)
+    sess = SESSIONS.get(session_id)
+    if not sess:
+        raise HTTPException(status_code=401, detail="Invalid or expired session; run /auth/handshake")
+    if sess["client_id"] != client_id:
+        raise HTTPException(status_code=403, detail="Session does not belong to this client")
+    if _now_utc() >= sess["expires_at"]:
+        # optional: delete expired
+        SESSIONS.pop(session_id, None)
+        raise HTTPException(status_code=401, detail="Session expired; run /auth/handshake again")
+    # OK → nothing to return; presence of dependency means authorized
+    return {"client_id": client_id, "session_id": session_id}
