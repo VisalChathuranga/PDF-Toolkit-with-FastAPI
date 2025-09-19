@@ -1,0 +1,26 @@
+# Core PDF & images
+pypdf
+pymupdf
+pillow
+
+# OCR engines (RapidOCR is default; EasyOCR optional)
+rapidocr-onnxruntime
+
+# Docling for PDF -> Markdown
+docling
+
+# (optional) speedups / convenience
+opencv-python
+numpy
+
+torch --index-url https://download.pytorch.org/whl/
+
+torchvision
+
+hf_xet
+
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9   # for file uploads
+pydantic>=2.7
+PyJWT 
