@@ -1,154 +1,214 @@
-# pdf_client.py
+'''
+client_full.py
+- Handshake with Basic -> get {session_id, access_token}
+- Upload ALL PDFs from a folder (optionally recursive, in batches)
+- Run: OCR (full & pages), MD (full & pages, with/without force_ocr), Split (all/range/specific, separate/combined), Merge
+- Download ALL outputs as a ZIP
+
+Requires: pip install requests
+Run: python client_full.py
+'''
+
+import base64
+import pathlib
 import requests
-from pathlib import Path
-from typing import List, Optional
-from urllib.parse import quote
+from typing import Iterable, List, Tuple
 
-class PDFClient:
-    def __init__(self, base_url: str = "http://localhost:8000"):
-        self.base_url = base_url.rstrip("/")
-        self.session_id: Optional[str] = None
+# =========================
+# CONFIG
+# =========================
+BASE = "http://localhost:8000"     # your API base
+USER = "demo"                      # Basic auth username (from PDF_API_CLIENTS)
+PASS = "demo"                      # Basic auth password
 
-    # ---------------- Session ----------------
-    def start_session(self) -> str:
-        r = requests.post(f"{self.base_url}/session/start")
-        r.raise_for_status()
-        self.session_id = r.json()["session_id"]
-        return self.session_id
+PDF_DIR   = pathlib.Path("./pdfs") # folder containing PDFs to upload
+RECURSIVE = True                   # include subfolders?
+BATCH_SIZE = 8                     # PDFs per upload request
 
-    def cleanup_session(self):
-        self._assert_session()
-        r = requests.delete(f"{self.base_url}/session/{self.session_id}")
-        r.raise_for_status()
-        return r.json()
+# choose which uploaded file to target for per-file operations
+PICK_FIRST_UPLOADED_FOR_DEMOS = True
 
-    # ---------------- Upload ----------------
-    def upload(self, pdf_paths: List[str]):
-        self._assert_session()
-        files = [("files", (Path(p).name, open(p, "rb"), "application/pdf")) for p in pdf_paths]
-        r = requests.post(f"{self.base_url}/session/{self.session_id}/upload", files=files)
-        r.raise_for_status()
-        return r.json()
+# =========================
+# HELPERS
+# =========================
+def basic_auth_header(user: str, pwd: str) -> dict:
+    token = base64.b64encode(f"{user}:{pwd}".encode()).decode()
+    return {"Authorization": f"Basic {token}"}
 
-    # ---------------- OCR ----------------
-    def ocr(self, filename: Optional[str] = None, output: str = "full", preprocess: bool = True):
-        self._assert_session()
-        params = {"filename": filename, "output": output, "preprocess": preprocess}
-        r = requests.post(f"{self.base_url}/session/{self.session_id}/ocr", params=params)
-        r.raise_for_status()
-        return r.json()
+def bearer_header(jwt: str) -> dict:
+    return {"Authorization": f"Bearer {jwt}"}
 
-    # ---------------- Markdown ----------------
-    def to_markdown(self, filename: Optional[str] = None, force_ocr: bool = False, output: str = "full"):
-        self._assert_session()
-        params = {"filename": filename, "force_ocr": force_ocr, "output": output}
-        r = requests.post(f"{self.base_url}/session/{self.session_id}/to-markdown", params=params)
-        r.raise_for_status()
-        return r.json()
+def find_pdfs(folder: pathlib.Path, recursive: bool = True) -> List[pathlib.Path]:
+    if not folder.exists():
+        raise FileNotFoundError(f"Folder not found: {folder}")
+    pattern = "**/*.pdf" if recursive else "*.pdf"
+    return sorted(p for p in folder.glob(pattern) if p.is_file() and p.suffix.lower() == ".pdf")
 
-    # ---------------- Split (QUERY PARAMS) ----------------
-    def split_pages(
-        self,
-        filename: Optional[str] = None,
-        pages: Optional[List[int]] = None,
-        page_range: Optional[str] = None,
-        combined: bool = False,
-    ):
-        self._assert_session()
-        qp = []
-        if filename is not None:
-            qp.append(("filename", filename))
-        if page_range is not None:
-            qp.append(("page_range", page_range))
-        qp.append(("combined", str(combined).lower()))
-        if pages:
-            for p in pages:
-                qp.append(("pages", str(int(p))))
-        r = requests.post(f"{self.base_url}/session/{self.session_id}/split-pages", params=qp)
-        r.raise_for_status()
-        return r.json()
+def batch(iterable: Iterable, n: int):
+    buf = []
+    for item in iterable:
+        buf.append(item)
+        if len(buf) == n:
+            yield buf
+            buf = []
+    if buf:
+        yield buf
 
-    # ---------------- Merge (QUERY PARAMS) ----------------
-    def merge(self, filenames: List[str], out_name: str = "merged.pdf"):
-        self._assert_session()
-        qp = [("out_name", out_name)]
-        for f in filenames:
-            qp.append(("filenames", f))
-        r = requests.post(f"{self.base_url}/session/{self.session_id}/merge", params=qp)
-        r.raise_for_status()
-        return r.json()
+def open_files_for_multipart(paths: List[pathlib.Path]) -> Tuple[List[Tuple[str, Tuple[str, object, str]]], List[object]]:
+    files_param = []
+    handles = []
+    for p in paths:
+        fh = open(p, "rb")
+        handles.append(fh)
+        files_param.append(("files", (p.name, fh, "application/pdf")))
+    return files_param, handles
 
-    # ---------------- Download ----------------
-    def download(self, server_path: str, save_as: str):
-        """
-        server_path MUST be a path RELATIVE to the session base, e.g.:
-          'output/splits/Matrix_Sample_p0001.pdf'
-        """
-        self._assert_session()
-        url = f"{self.base_url}/session/{self.session_id}/download/{quote(server_path)}"
-        print("GET:", url)  # <-- debug so you can see it's output/splits/...
-        r = requests.get(url, stream=True)
-        if r.status_code != 200:
-            raise RuntimeError(f"Download failed: {r.status_code} {r.text}")
-        with open(save_as, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-        return save_as
-
-    # ---------------- Helpers ----------------
-    def _assert_session(self):
-        if not self.session_id:
-            raise RuntimeError("No session started. Call start_session() first.")
-
-    @staticmethod
-    def to_relative_from_api(raw_path: str, session_id: str) -> str:
-        """
-        Convert absolute Windows/POSIX path from API to the relative path
-        expected by /download/{filename}.
-        Example:
-          raw: '\\tmp\\pdf_processing\\<sid>\\output\\splits\\Matrix_Sample_p0001.pdf'
-          ->  'output/splits/Matrix_Sample_p0001.pdf'
-        """
-        p = raw_path.replace("\\", "/")
-        anchor = f"/{session_id}/"
-        idx = p.find(anchor)
-        if idx != -1:
-            rel = p[idx + len(anchor):]
-        else:
-            rel = p.lstrip("/")
-        return rel
-
-
-# ---------------- Example: split pages 1, 7, 19 ----------------
+# =========================
+# MAIN
+# =========================
 if __name__ == "__main__":
-    client = PDFClient("http://localhost:8000")
+    # 1) Handshake (Basic) -> { session_id, access_token }
+    r = requests.post(f"{BASE}/auth/handshake", headers=basic_auth_header(USER, PASS))
+    r.raise_for_status()
+    hs = r.json()
+    session_id = hs["session_id"]
+    token      = hs["access_token"]
+    print(f"[handshake] session_id={session_id}")
 
-    # 1) Start session
-    sid = client.start_session()
-    print("Session:", sid)
+    # 2) Discover PDFs in the folder (once)
+    pdfs = find_pdfs(PDF_DIR, recursive=RECURSIVE)
+    if not pdfs:
+        raise SystemExit(f"No PDFs found in {PDF_DIR} (recursive={RECURSIVE})")
+    print(f"[upload] found {len(pdfs)} PDFs under {PDF_DIR.resolve()} (recursive={RECURSIVE})")
 
-    # 2) Upload one PDF
-    client.upload(["Matrix_Sample.pdf"])
+    # 3) Upload in batches
+    uploaded_total = 0
+    for i, group in enumerate(batch(pdfs, BATCH_SIZE), start=1):
+        files_param, handles = open_files_for_multipart(group)
+        try:
+            rr = requests.post(
+                f"{BASE}/session/{session_id}/upload",
+                headers=bearer_header(token),
+                files=files_param,
+                timeout=300,
+            )
+            rr.raise_for_status()
+            uploaded_total += len(group)
+            print(f"[upload][batch {i}] {len(group)} file(s) -> OK")
+        finally:
+            for h in handles:
+                try: h.close()
+                except: pass
+    print(f"[upload] done: {uploaded_total} file(s) uploaded")
 
-    # 3) Split pages 1,7,19 into SEPARATE PDFs
-    split_sep = client.split_pages(pages=[1, 7, 19], combined=False)
-    print("Split (separate):", split_sep)
+    # pick a file name to demonstrate per-file calls (first uploaded)
+    target_pdf_name = pdfs[0].name if PICK_FIRST_UPLOADED_FOR_DEMOS else None
+    if target_pdf_name:
+        print(f"[demo] using target file: {target_pdf_name}")
 
-    # Download each of the SEPARATE files using the EXACT paths returned
-    for i, raw in enumerate(split_sep["output_files"], start=1):
-        rel = client.to_relative_from_api(raw, sid)
-        assert rel.startswith("output/"), f"Refusing to download non-output path: {rel}"
-        client.download(rel, f"Matrix_Sample_page_{i}.pdf")
+    # =========================
+    # OCR
+    # =========================
+    # a) one combined TXT (with page breakers)
+    rr = requests.post(f"{BASE}/session/{session_id}/ocr",
+                       headers=bearer_header(token),
+                       params={"filename": target_pdf_name, "output": "full"},
+                       timeout=3600)
+    rr.raise_for_status()
+    print("[ocr][full] saved:", rr.json().get("file_path"))
 
-    # 4) Split pages 1,7,19 into ONE COMBINED PDF
-    split_comb = client.split_pages(pages=[1, 7, 19], combined=True)
-    print("Split (combined):", split_comb)
+    # b) per-page TXT files
+    rr = requests.post(f"{BASE}/session/{session_id}/ocr",
+                       headers=bearer_header(token),
+                       params={"filename": target_pdf_name, "output": "pages"},
+                       timeout=3600)
+    rr.raise_for_status()
+    print("[ocr][pages] saved:", len(rr.json().get("file_paths", [])), "files")
 
-    # Download the combined file (again: use the returned path)
-    rel_comb = client.to_relative_from_api(split_comb["output_files"][0], sid)
-    assert rel_comb.startswith("output/"), f"Refusing to download non-output path: {rel_comb}"
-    client.download(rel_comb, "Matrix_Sample_pages_1_7_19.pdf")
+    # =========================
+    # Markdown (no OCR)
+    # =========================
+    rr = requests.post(f"{BASE}/session/{session_id}/to-markdown",
+                       headers=bearer_header(token),
+                       params={"filename": target_pdf_name, "output": "full"},
+                       timeout=3600)
+    rr.raise_for_status()
+    print("[md][full] saved:", rr.json().get("file_path"))
 
-    # 5) (optional) cleanup
-    print(client.cleanup_session())
+    rr = requests.post(f"{BASE}/session/{session_id}/to-markdown",
+                       headers=bearer_header(token),
+                       params={"filename": target_pdf_name, "output": "pages"},
+                       timeout=3600)
+    rr.raise_for_status()
+    print("[md][pages] saved:", len(rr.json().get("file_paths", [])), "files")
+
+    # =========================
+    # Markdown (force OCR inside Docling)
+    # =========================
+    rr = requests.post(f"{BASE}/session/{session_id}/to-markdown",
+                       headers=bearer_header(token),
+                       params={"filename": target_pdf_name, "force_ocr": "true", "output": "pages"},
+                       timeout=7200)
+    rr.raise_for_status()
+    print("[md][pages][force_ocr] saved:", len(rr.json().get("file_paths", [])), "files")
+
+    # =========================
+    # Split pages
+    # =========================
+    # a) ALL pages -> separate PDFs
+    rr = requests.post(f"{BASE}/session/{session_id}/split-pages",
+                       headers=bearer_header(token),
+                       params={"filename": target_pdf_name},   # no pages/range -> all separate
+                       timeout=1200)
+    rr.raise_for_status()
+    print("[split][all->separate] files:", len(rr.json().get("output_files", [])))
+
+    # b) RANGE (1–5) -> ONE combined PDF
+    rr = requests.post(f"{BASE}/session/{session_id}/split-pages",
+                       headers=bearer_header(token),
+                       params={"filename": target_pdf_name, "page_range": "1-5", "combined": "true"},
+                       timeout=600)
+    rr.raise_for_status()
+    print("[split][range->combined] out:", rr.json().get("output_files"))
+
+    # c) specific pages (2, 7, 11, 15) -> separate PDFs
+    rr = requests.post(f"{BASE}/session/{session_id}/split-pages",
+                       headers=bearer_header(token),
+                       params=[("filename", target_pdf_name)] + [("pages", p) for p in [2,7,11,15]],
+                       timeout=600)
+    rr.raise_for_status()
+    print("[split][specific->separate] files:", len(rr.json().get("output_files", [])))
+
+    # d) specific pages (2, 7, 11, 15) -> ONE combined PDF
+    rr = requests.post(f"{BASE}/session/{session_id}/split-pages",
+                       headers=bearer_header(token),
+                       params=[("filename", target_pdf_name)] + [("pages", p) for p in [2,7,11,15]] + [("combined", "true")],
+                       timeout=600)
+    rr.raise_for_status()
+    print("[split][specific->combined] out:", rr.json().get("output_files"))
+
+    # =========================
+    # Merge (example: merge first two uploaded PDFs if available)
+    # =========================
+    if len(pdfs) >= 2:
+        names = [pdfs[0].name, pdfs[1].name]
+        rr = requests.post(f"{BASE}/session/{session_id}/merge",
+                           headers=bearer_header(token),
+                           json={"filenames": names, "out_name": "merged.pdf"},
+                           timeout=600)
+        rr.raise_for_status()
+        print("[merge] out:", rr.json().get("output_file"))
+
+    # =========================
+    # Download ALL outputs as ZIP
+    # =========================
+    out_zip = pathlib.Path("outputs.zip")
+    with requests.get(f"{BASE}/session/{session_id}/download",
+                      headers=bearer_header(token),
+                      stream=True,
+                      timeout=3600) as resp:
+        resp.raise_for_status()
+        with open(out_zip, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                if chunk: f.write(chunk)
+    print("[download] saved ->", out_zip.resolve())
