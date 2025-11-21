@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+pypdf
+pymupdf
+pillow
+docling
+rapidocr-onnxruntime
+numpy
+opencv-python
+python-multipart
+pydantic
+requests
