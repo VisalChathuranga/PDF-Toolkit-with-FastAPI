@@ -1,12 +1,14 @@
 # pdf_api.py
 import os
 import shutil
+import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Query
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -14,13 +16,10 @@ from concurrent.futures import ThreadPoolExecutor
 # toolkit
 from main import PDFToolkit
 
-# simple auth (Basic + JWT)
-from auth import handshake_basic, extend_session, require_auth_simple
-
 app = FastAPI(
     title="PDF Processing API",
     description="API for PDF operations: OCR, PDF→Markdown, split pages, merge",
-    version="1.3.0 (basic+jwt)",
+    version="1.5.0 (local-paths)",
 )
 
 app.add_middleware(
@@ -33,8 +32,24 @@ app.add_middleware(
 
 executor = ThreadPoolExecutor(max_workers=os.cpu_count() or 4)
 
+# ----------------------- SESSION STATE -----------------------
+
+class SessionConfig(BaseModel):
+    input_dir: Optional[str] = None
+    output_dir: Optional[str] = None
+
+SESSIONS: Dict[str, SessionConfig] = {}
+
 def get_kit(session_id: str) -> PDFToolkit:
     base_dir = Path(f"/tmp/pdf_processing/{session_id}")
+    config = SESSIONS.get(session_id)
+    
+    if config:
+        return PDFToolkit(
+            base_dir=base_dir,
+            input_dir=config.input_dir,
+            output_dir=config.output_dir
+        )
     return PDFToolkit(base_dir=base_dir)
 
 async def _run_blocking(func):
@@ -59,30 +74,35 @@ def _zip_outputs(base: Path) -> Path:
     archive_path = shutil.make_archive(str(base / zip_name), "zip", root_dir=target_dir)
     return Path(archive_path)
 
-# ----------------------- AUTH -----------------------
+# ----------------------- SESSION -----------------------
 
-@app.post("/auth/handshake", tags=["auth"])
-async def auth_handshake(resp = Depends(handshake_basic)):
+@app.post("/session/new", tags=["session"])
+async def create_session(config: Optional[SessionConfig] = None):
     """
-    Provide HTTP Basic creds in Swagger -> receive {session_id, access_token}.
-    Use Bearer token or Basic+session on subsequent calls.
+    Create a new session ID. 
+    Optionally pass 'input_dir' and 'output_dir' to use existing local folders.
     """
-    return resp
+    session_id = str(uuid.uuid4())
+    if config:
+        SESSIONS[session_id] = config
+    else:
+        SESSIONS[session_id] = SessionConfig()
+    return {"session_id": session_id}
 
-@app.post("/auth/extend/{session_id}", tags=["auth"])
-async def auth_extend(resp = Depends(extend_session)):
+@app.get("/session/{session_id}/files", tags=["session"])
+async def list_files(session_id: str):
     """
-    Extend session TTL and mint a fresh JWT for the same session_id.
+    List PDF files in the session's input directory.
     """
-    return resp
-
-# ---------------------- OPS ------------------------
+    try:
+        kit = get_kit(session_id)
+        files = [p.name for p in kit._list_input_pdfs()]
+        return {"files": files, "input_dir": str(kit.paths["input"])}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/session/{session_id}", tags=["session"])
-async def cleanup_session(
-    session_id: str,
-    _auth = Depends(require_auth_simple),
-):
+async def cleanup_session(session_id: str):
     try:
         base_dir = Path(f"/tmp/pdf_processing/{session_id}")
         if base_dir.exists():
@@ -91,11 +111,12 @@ async def cleanup_session(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# ---------------------- OPS ------------------------
+
 @app.post("/session/{session_id}/upload", tags=["io"])
 async def upload_files(
     session_id: str,
     files: List[UploadFile] = File(...),
-    _auth = Depends(require_auth_simple),
 ):
     try:
         kit = get_kit(session_id)
@@ -119,7 +140,6 @@ async def ocr_pdf(
     filename: Optional[str] = None,
     preprocess: bool = True,
     output: str = "full",
-    _auth = Depends(require_auth_simple),
 ):
     try:
         kit = get_kit(session_id)
@@ -139,7 +159,6 @@ async def to_markdown(
     filename: Optional[str] = None,
     force_ocr: bool = False,
     output: str = "full",
-    _auth = Depends(require_auth_simple),
 ):
     try:
         kit = get_kit(session_id)
@@ -160,7 +179,6 @@ async def split_pages(
     pages: Optional[List[int]] = None,
     page_range: Optional[str] = None,
     combined: bool = False,
-    _auth = Depends(require_auth_simple),
 ):
     try:
         kit = get_kit(session_id)
@@ -176,7 +194,6 @@ async def merge_pdfs(
     session_id: str,
     filenames: List[str],
     out_name: str = "merged.pdf",
-    _auth = Depends(require_auth_simple),
 ):
     try:
         kit = get_kit(session_id)
@@ -189,7 +206,6 @@ async def merge_pdfs(
 async def download(
     session_id: str,
     name: Optional[str] = Query(default=None, description="Just the filename (e.g., 'file.pdf'). Omit to download all outputs as a zip."),
-    _auth = Depends(require_auth_simple),
 ):
     kit = get_kit(session_id)
     base = kit.paths["base"].resolve()
@@ -218,4 +234,4 @@ async def download(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=5005)

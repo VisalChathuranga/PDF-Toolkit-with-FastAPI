@@ -1,58 +1,78 @@
 from main import PDFToolkit
+from pathlib import Path
 
-# create toolkit (you can pass base_dir="workspace" or another path)
-kit = PDFToolkit()  # default base_dir="workspace"
+# ==========================================
+# 1. SETUP: Define your local directories
+# ==========================================
+# Change these to your actual folders!
+INPUT_DIR = "C:/Users/Visal/Documents/MyPDFs"
+OUTPUT_DIR = "C:/Users/Visal/Documents/ProcessedPDFs"
 
-kit.ingest(["/path/to/a.pdf", "/path/to/b.pdf"])
+# Create the toolkit with custom paths
+# If you don't provide input_dir/output_dir, it defaults to ./workspace/input and ./workspace/output
+kit = PDFToolkit(
+    input_dir=INPUT_DIR,
+    output_dir=OUTPUT_DIR
+)
 
-# -----------------------------------------------------------
-# OCR
-full_txt, full_txt_path   = kit.ocr_pdf(output="full")            # one combined TXT (with page breakers)
-pages_txt, page_txt_paths = kit.ocr_pdf(output="pages")           # per-page TXT files
+print(f"Toolkit ready!")
+print(f"Reading from: {kit.paths['input']}")
+print(f"Saving to:   {kit.paths['output']}")
 
-# -----------------------------------------------------------
-# Markdown (no OCR)
-full_md, full_md_path     = kit.pdf_to_markdown(output="full")    # one combined MD
-pages_md, page_md_paths   = kit.pdf_to_markdown(output="pages")   # per-page MD files
+# ==========================================
+# 2. OCR (Optical Character Recognition)
+# ==========================================
+# Extract text from images/scanned PDFs
 
-# -----------------------------------------------------------
-# Markdown (force OCR inside Docling)
-md_pages_ocr, md_paths_ocr = kit.pdf_to_markdown(force_ocr=True, output="pages")
+# Example A: Process "scan.pdf" -> Single text file
+# Output: {OUTPUT_DIR}/ocr/scan.rapidocr.txt
+# full_txt, path = kit.ocr_pdf("scan.pdf", output="full")
 
-# -----------------------------------------------------------
-# Split pages (when there is exactly ONE PDF in <base>/input)
-# a) split ALL pages to separate PDFs (default behavior)
-outs_all_separate = kit.split_pages()
+# Example B: Process "scan.pdf" -> One text file per page
+# Output: {OUTPUT_DIR}/ocr/scan_p0001.rapidocr.txt, ...
+# pages_txt, paths = kit.ocr_pdf("scan.pdf", output="pages")
 
-# b) split a RANGE (1–5) into ONE combined PDF
-outs_range_combined = kit.split_pages(page_range="1-5", combined=True)
 
-# c) split specific pages (2, 7, 11, 15) into separate PDFs
-outs_specific_separate = kit.split_pages(pages=[2, 7, 11, 15])
+# ==========================================
+# 3. PDF to Markdown (Docling)
+# ==========================================
+# Convert PDF layout/tables to Markdown
 
-# d) split specific pages (2, 7, 11, 15) into ONE combined PDF
-outs_specific_combined = kit.split_pages(pages=[2, 7, 11, 15], combined=True)
+# Example A: "report.pdf" -> Single Markdown file
+# Output: {OUTPUT_DIR}/markdown/report.md
+# full_md, path = kit.pdf_to_markdown("report.pdf", output="full")
 
-# -----------------------------------------------------------
-# OCR & Markdown for a specific file (when multiple PDFs exist)
-txt, txt_path          = kit.ocr_pdf("a.pdf", output="full")
-mds, md_paths          = kit.pdf_to_markdown("a.pdf", output="pages")
-mds_ocr, md_paths_ocr  = kit.pdf_to_markdown("a.pdf", force_ocr=True, output="pages")
+# Example B: "report.pdf" -> One Markdown file per page
+# Output: {OUTPUT_DIR}/markdown/report_p0001.md, ...
+# pages_md, paths = kit.pdf_to_markdown("report.pdf", output="pages")
 
-# -----------------------------------------------------------
-# Split pages for a specific file
-# a) split ALL pages of a.pdf to separate PDFs
-outs_all = kit.split_pages(pdf_path="a.pdf")
+# Example C: Force OCR (good for scanned docs needing layout preservation)
+# md_ocr, paths = kit.pdf_to_markdown("scan.pdf", force_ocr=True, output="pages")
 
-# b) split range (1–5) of a.pdf into ONE combined PDF
-outs_range = kit.split_pages(pdf_path="a.pdf", page_range="1-5", combined=True)
 
-# c) split specific pages of a.pdf into separate PDFs
-outs_specific = kit.split_pages(pdf_path="a.pdf", pages=[2, 7, 11, 15])
+# ==========================================
+# 4. Split Pages
+# ==========================================
 
-# d) split specific pages of a.pdf into ONE combined PDF
-outs_specific_combined = kit.split_pages(pdf_path="a.pdf", pages=[2, 7, 11, 15], combined=True)
+# Example A: Split ALL pages into separate PDFs
+# Output: {OUTPUT_DIR}/splits/doc_p0001.pdf, doc_p0002.pdf...
+# kit.split_pages("doc.pdf")
 
-# -----------------------------------------------------------
-# Merge (unchanged)
-merged = kit.merge_pdfs(["a.pdf", "b.pdf"], out_name="merged.pdf")
+# Example B: Extract range (1-5) into ONE combined PDF
+# Output: {OUTPUT_DIR}/splits/doc_pages_0001-0005.pdf
+# kit.split_pages("doc.pdf", page_range="1-5", combined=True)
+
+# Example C: Extract specific pages (1, 3, 5) into separate PDFs
+# kit.split_pages("doc.pdf", pages=[1, 3, 5])
+
+# Example D: Extract specific pages (1, 3, 5) into ONE combined PDF
+# kit.split_pages("doc.pdf", pages=[1, 3, 5], combined=True)
+
+
+# ==========================================
+# 5. Merge PDFs
+# ==========================================
+
+# Merge "part1.pdf" and "part2.pdf" into "final.pdf"
+# Output: {OUTPUT_DIR}/merged/final.pdf
+# kit.merge_pdfs(["part1.pdf", "part2.pdf"], out_name="final.pdf")

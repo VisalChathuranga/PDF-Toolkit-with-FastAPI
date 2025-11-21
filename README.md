@@ -1,19 +1,19 @@
 # 📄 PDF Processing Toolkit API
 
 A powerful **Python + FastAPI** service to process PDF files with OCR, Markdown conversion, splitting, and merging.  
-Supports **RapidOCR**, **Docling**, and includes **Basic + JWT Authentication** for security.
+Supports **RapidOCR**, **Docling**, and is **fully open (no auth)** for easy integration.
 
 ---
 
 ## 🚀 Features
 
-- ✅ Upload and manage PDFs per session  
-- ✅ OCR (text extraction with page-by-page or full document)  
-- ✅ Convert PDFs → **Markdown** (Docling, with optional OCR)  
-- ✅ Split PDFs by **range** or **specific pages**  
-- ✅ Merge multiple PDFs in any order  
-- ✅ Secure API with **Basic Auth** + **JWT**  
-- ✅ Swagger & ReDoc auto-generated docs  
+- ✅ **Local Directory Support**: Process files directly from your local folders
+- ✅ Upload and manage PDFs per session
+- ✅ OCR (text extraction with page-by-page or full document)
+- ✅ Convert PDFs → **Markdown** (Docling, with optional OCR)
+- ✅ Split PDFs by **range** or **specific pages**
+- ✅ Merge multiple PDFs in any order
+- ✅ Swagger & ReDoc auto-generated docs
 
 ---
 
@@ -21,10 +21,9 @@ Supports **RapidOCR**, **Docling**, and includes **Basic + JWT Authentication** 
 
 ```
 pdf-tool-kit/
-├── pdfs/                 # Your input PDFs
-├── workspace/            # Auto-created output workspace
-├── auth.py               # Authentication (Basic + JWT)
-├── commands.py           # Example CLI commands (optional)
+├── pdfs/                 # Your input PDFs (default)
+├── workspace/            # Auto-created output workspace (default)
+├── commands.py           # Example CLI commands & Python usage
 ├── main.py               # Core PDFToolkit class (processing logic)
 ├── pdf_api.py            # FastAPI server (exposes endpoints)
 ├── pdf_client.py         # Example Python client
@@ -46,92 +45,148 @@ conda activate pdf_toolkit
 pip install -r requirements.txt
 
 # 3) Run API
-uvicorn pdf_api:app --reload
+uvicorn pdf_api:app --reload --port 5005
 
 # API Docs
-http://localhost:8000/docs   # Swagger UI
-http://localhost:8000/redoc  # ReDoc
+http://localhost:5005/docs   # Swagger UI
+http://localhost:5005/redoc  # ReDoc
 ```
 
 ---
 
-## 🔑 Authentication
+## 🚀 Deployment & Microservice Usage
 
-- First, authenticate with **Basic Auth** → receive `session_id` + `JWT`  
-- Then, use the `JWT` (`Bearer token`) for all subsequent requests  
-- Sessions **expire after 1 hour** (configurable)
+### 1. Running on a Server (e.g., "91 Server")
 
-Example (Basic Auth header):  
-```
-Authorization: Basic base64(username:password)
-```
-
-Example (JWT Bearer header):  
-```
-Authorization: Bearer <your_token>
-```
-
----
-
-## 🖥️ Example Client
-
-```python
-from pdf_client import run_demo
-
-# This will:
-# 1. Authenticate
-# 2. Upload all PDFs in ./pdfs/
-# 3. Run OCR, Markdown, Split, Merge
-# 4. Download results as outputs.zip
-
-run_demo()
-```
-
----
-
-## 🔧 Example API Usage (Python Client)
-
-```python
-# OCR
-full_txt, full_txt_path   = kit.ocr_pdf(output="full")    # one TXT with page breakers
-pages_txt, page_txt_paths = kit.ocr_pdf(output="pages")   # per-page TXT files
-
-# Markdown (no OCR)
-full_md, full_md_path     = kit.pdf_to_markdown(output="full")
-pages_md, page_md_paths   = kit.pdf_to_markdown(output="pages")
-
-# Markdown (force OCR inside Docling)
-md_pages_ocr, md_paths_ocr = kit.pdf_to_markdown(force_ocr=True, output="pages")
-
-# Split pages
-outs_all_separate   = kit.split_pages()
-outs_range_combined = kit.split_pages(page_range="1-5", combined=True)
-outs_specific_sep   = kit.split_pages(pages=[2, 7, 11, 15])
-outs_specific_comb  = kit.split_pages(pages=[2, 7, 11, 15], combined=True)
-
-# Merge
-merged = kit.merge_pdfs(["a.pdf", "b.pdf"], out_name="merged.pdf")
-```
-
----
-
-## 📦 Download Results
-
-- **Default** → `/download` returns **all outputs** as `.zip`  
-- **Specific file** → `/download?name=file.pdf` returns the chosen file  
-
----
-
-## 🛡️ Environment Variables
-
-Set in `.env` or system:  
+To make the API accessible to other servers (like your "Main Production Server"), you must run it with `--host 0.0.0.0`.
 
 ```bash
-# Allowed clients (username/password pairs)
-PDF_API_CLIENTS='{"demo":"demo","myapp":"supersecret"}'
+uvicorn pdf_api:app --host 0.0.0.0 --port 5005
+```
 
-# Token lifetime (minutes)
-PDF_API_TOKEN_TTL_MIN=60
+### 2. Shared Paths / Network Drives
+
+If you are calling this service from another server and passing `input_dir` / `output_dir`:
+
+- **The paths must be visible to THIS service (the 91 server).**
+- If the files are on the Main Server, you must mount that folder on the 91 Server (e.g., as a network drive `Z:/` or `/mnt/share`).
+- Then pass the **mounted path** (e.g., `Z:/Input`) to the API.
+
+---
+
+## 📜 CURL Cheat Sheet
+
+Here are the `curl` commands to integrate this service into your workflow.
+
+### 1️⃣ Create Session (Define Paths)
+
+Tell the service where to look for files and where to save them.
+
+```bash
+curl -X POST "http://192.168.1.91:5005/session/new" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "input_dir": "C:/Production/PDFs/Input",
+           "output_dir": "C:/Production/PDFs/Output"
+         }'
+# Returns: {"session_id": "550e8400-e29b..."}
+```
+
+### 2️⃣ List Available Files
+
+Check what PDFs are in the input directory.
+
+```bash
+curl "http://192.168.1.91:5005/session/<SESSION_ID>/files"
+```
+
+### 3️⃣ OCR (Image to Text)
+
+Process a specific file found in the input directory.
+
+**Option A: Full Text (One File)**
+
+```bash
+curl -X POST "http://192.168.1.91:5005/session/<SESSION_ID>/ocr?filename=scan.pdf&output=full"
+```
+
+**Option B: Per Page (Multiple Files)**
+
+```bash
+curl -X POST "http://192.168.1.91:5005/session/<SESSION_ID>/ocr?filename=scan.pdf&output=pages"
+```
+
+### 4️⃣ PDF to Markdown (Docling)
+
+Convert a PDF to Markdown (great for LLM RAG).
+
+```bash
+# Standard
+curl -X POST "http://192.168.1.91:5005/session/<SESSION_ID>/to-markdown?filename=doc.pdf&output=full"
+
+# Force OCR (for scanned docs)
+curl -X POST "http://192.168.1.91:5005/session/<SESSION_ID>/to-markdown?filename=scan.pdf&output=full&force_ocr=true"
+```
+
+### 5️⃣ Split Pages
+
+**Split ALL pages to separate PDFs:**
+
+```bash
+curl -X POST "http://192.168.1.91:5005/session/<SESSION_ID>/split-pages?filename=doc.pdf"
+```
+
+**Extract Range (1-5) to New PDF:**
+
+```bash
+curl -X POST "http://192.168.1.91:5005/session/<SESSION_ID>/split-pages?filename=doc.pdf&page_range=1-5&combined=true"
+```
+
+### 6️⃣ Merge PDFs
+
+Merge two files (must be in the input directory).
+
+```bash
+curl -X POST "http://192.168.1.91:5005/session/<SESSION_ID>/merge" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "filenames": ["part1.pdf", "part2.pdf"],
+           "out_name": "final_merged.pdf"
+         }'
+```
+
+### 7️⃣ Download Results (Optional)
+
+If you didn't set an `output_dir`, or want to download the files over HTTP:
+
+```bash
+# Download everything as ZIP
+curl -O -J "http://192.168.1.91:5005/session/<SESSION_ID>/download"
+
+# Download specific file
+curl -O -J "http://192.168.1.91:5005/session/<SESSION_ID>/download?name=final_merged.pdf"
+```
+
+---
+
+## 🖥️ Example Python Client
+
+```python
+import requests
+
+API_URL = "http://192.168.1.91:5005"
+
+# 1. Setup Session
+config = {
+    "input_dir": "D:/Shared/In",
+    "output_dir": "D:/Shared/Out"
+}
+sess = requests.post(f"{API_URL}/session/new", json=config).json()
+sid = sess["session_id"]
+
+# 2. Process
+requests.post(f"{API_URL}/session/{sid}/ocr", params={"filename": "invoice.pdf"})
+print("Done! Check D:/Shared/Out/ocr/")
 ```
 
 ---
@@ -139,3 +194,7 @@ PDF_API_TOKEN_TTL_MIN=60
 ## 📝 License
 
 MIT © 2025 — Built for internal use 🚀
+
+```
+
+```

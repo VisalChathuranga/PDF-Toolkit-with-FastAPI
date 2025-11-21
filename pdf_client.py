@@ -1,6 +1,6 @@
 '''
 client_full.py
-- Handshake with Basic -> get {session_id, access_token}
+- Create session -> get {session_id}
 - Upload ALL PDFs from a folder (optionally recursive, in batches)
 - Run: OCR (full & pages), MD (full & pages, with/without force_ocr), Split (all/range/specific, separate/combined), Merge
 - Download ALL outputs as a ZIP
@@ -9,7 +9,6 @@ Requires: pip install requests
 Run: python client_full.py
 '''
 
-import base64
 import pathlib
 import requests
 from typing import Iterable, List, Tuple
@@ -17,9 +16,7 @@ from typing import Iterable, List, Tuple
 # =========================
 # CONFIG
 # =========================
-BASE = "http://localhost:8000"     # your API base
-USER = "demo"                      # Basic auth username (from PDF_API_CLIENTS)
-PASS = "demo"                      # Basic auth password
+BASE = "http://localhost:5005"     # your API base
 
 PDF_DIR   = pathlib.Path("./pdfs") # folder containing PDFs to upload
 RECURSIVE = True                   # include subfolders?
@@ -31,13 +28,6 @@ PICK_FIRST_UPLOADED_FOR_DEMOS = True
 # =========================
 # HELPERS
 # =========================
-def basic_auth_header(user: str, pwd: str) -> dict:
-    token = base64.b64encode(f"{user}:{pwd}".encode()).decode()
-    return {"Authorization": f"Basic {token}"}
-
-def bearer_header(jwt: str) -> dict:
-    return {"Authorization": f"Bearer {jwt}"}
-
 def find_pdfs(folder: pathlib.Path, recursive: bool = True) -> List[pathlib.Path]:
     if not folder.exists():
         raise FileNotFoundError(f"Folder not found: {folder}")
@@ -67,13 +57,12 @@ def open_files_for_multipart(paths: List[pathlib.Path]) -> Tuple[List[Tuple[str,
 # MAIN
 # =========================
 if __name__ == "__main__":
-    # 1) Handshake (Basic) -> { session_id, access_token }
-    r = requests.post(f"{BASE}/auth/handshake", headers=basic_auth_header(USER, PASS))
+    # 1) Create Session -> { session_id }
+    r = requests.post(f"{BASE}/session/new")
     r.raise_for_status()
     hs = r.json()
     session_id = hs["session_id"]
-    token      = hs["access_token"]
-    print(f"[handshake] session_id={session_id}")
+    print(f"[session] session_id={session_id}")
 
     # 2) Discover PDFs in the folder (once)
     pdfs = find_pdfs(PDF_DIR, recursive=RECURSIVE)
@@ -88,7 +77,6 @@ if __name__ == "__main__":
         try:
             rr = requests.post(
                 f"{BASE}/session/{session_id}/upload",
-                headers=bearer_header(token),
                 files=files_param,
                 timeout=300,
             )
@@ -111,7 +99,6 @@ if __name__ == "__main__":
     # =========================
     # a) one combined TXT (with page breakers)
     rr = requests.post(f"{BASE}/session/{session_id}/ocr",
-                       headers=bearer_header(token),
                        params={"filename": target_pdf_name, "output": "full"},
                        timeout=3600)
     rr.raise_for_status()
@@ -119,7 +106,6 @@ if __name__ == "__main__":
 
     # b) per-page TXT files
     rr = requests.post(f"{BASE}/session/{session_id}/ocr",
-                       headers=bearer_header(token),
                        params={"filename": target_pdf_name, "output": "pages"},
                        timeout=3600)
     rr.raise_for_status()
@@ -129,14 +115,12 @@ if __name__ == "__main__":
     # Markdown (no OCR)
     # =========================
     rr = requests.post(f"{BASE}/session/{session_id}/to-markdown",
-                       headers=bearer_header(token),
                        params={"filename": target_pdf_name, "output": "full"},
                        timeout=3600)
     rr.raise_for_status()
     print("[md][full] saved:", rr.json().get("file_path"))
 
     rr = requests.post(f"{BASE}/session/{session_id}/to-markdown",
-                       headers=bearer_header(token),
                        params={"filename": target_pdf_name, "output": "pages"},
                        timeout=3600)
     rr.raise_for_status()
@@ -146,7 +130,6 @@ if __name__ == "__main__":
     # Markdown (force OCR inside Docling)
     # =========================
     rr = requests.post(f"{BASE}/session/{session_id}/to-markdown",
-                       headers=bearer_header(token),
                        params={"filename": target_pdf_name, "force_ocr": "true", "output": "pages"},
                        timeout=7200)
     rr.raise_for_status()
@@ -157,7 +140,6 @@ if __name__ == "__main__":
     # =========================
     # a) ALL pages -> separate PDFs
     rr = requests.post(f"{BASE}/session/{session_id}/split-pages",
-                       headers=bearer_header(token),
                        params={"filename": target_pdf_name},   # no pages/range -> all separate
                        timeout=1200)
     rr.raise_for_status()
@@ -165,7 +147,6 @@ if __name__ == "__main__":
 
     # b) RANGE (1–5) -> ONE combined PDF
     rr = requests.post(f"{BASE}/session/{session_id}/split-pages",
-                       headers=bearer_header(token),
                        params={"filename": target_pdf_name, "page_range": "1-5", "combined": "true"},
                        timeout=600)
     rr.raise_for_status()
@@ -173,7 +154,6 @@ if __name__ == "__main__":
 
     # c) specific pages (2, 7, 11, 15) -> separate PDFs
     rr = requests.post(f"{BASE}/session/{session_id}/split-pages",
-                       headers=bearer_header(token),
                        params=[("filename", target_pdf_name)] + [("pages", p) for p in [2,7,11,15]],
                        timeout=600)
     rr.raise_for_status()
@@ -181,7 +161,6 @@ if __name__ == "__main__":
 
     # d) specific pages (2, 7, 11, 15) -> ONE combined PDF
     rr = requests.post(f"{BASE}/session/{session_id}/split-pages",
-                       headers=bearer_header(token),
                        params=[("filename", target_pdf_name)] + [("pages", p) for p in [2,7,11,15]] + [("combined", "true")],
                        timeout=600)
     rr.raise_for_status()
@@ -193,7 +172,6 @@ if __name__ == "__main__":
     if len(pdfs) >= 2:
         names = [pdfs[0].name, pdfs[1].name]
         rr = requests.post(f"{BASE}/session/{session_id}/merge",
-                           headers=bearer_header(token),
                            json={"filenames": names, "out_name": "merged.pdf"},
                            timeout=600)
         rr.raise_for_status()
@@ -204,7 +182,6 @@ if __name__ == "__main__":
     # =========================
     out_zip = pathlib.Path("outputs.zip")
     with requests.get(f"{BASE}/session/{session_id}/download",
-                      headers=bearer_header(token),
                       stream=True,
                       timeout=3600) as resp:
         resp.raise_for_status()

@@ -25,29 +25,6 @@ import numpy as np
 import cv2
 
 
-# ---------- Utility paths ----------
-
-def ensure_workspace(base: Path = Path("workspace")) -> dict:
-    """
-    Ensure the expected directory layout exists and return useful paths.
-    """
-    paths = {
-        "base": base,
-        "input": base / "input",
-        "ocr_out": base / "output" / "ocr",
-        "md_out": base / "output" / "markdown",
-        "split_out": base / "output" / "splits",
-        "merge_out": base / "output" / "merged",
-        "temp": base / "temp",
-    }
-    for p in paths.values():
-        if isinstance(p, Path):
-            p.mkdir(parents=True, exist_ok=True)
-    return paths
-
-
-# ---------- Core class ----------
-
 class PDFToolkit:
     """
     Workspace-first utilities: upload, OCR (RapidOCR), PDF->Markdown, split, merge.
@@ -59,9 +36,37 @@ class PDFToolkit:
           kit.ocr_pdf("a.pdf"); kit.split_pages("a.pdf")
     """
 
-    def __init__(self, base_dir: Path | str = "workspace", dpi: int = 300):
-        self.paths = ensure_workspace(Path(base_dir))
+    def __init__(
+        self,
+        base_dir: Path | str = "workspace",
+        input_dir: Path | str = None,
+        output_dir: Path | str = None,
+        dpi: int = 300
+    ):
+        self.base_dir = Path(base_dir)
+        self.input_dir = Path(input_dir) if input_dir else self.base_dir / "input"
+        self.output_dir = Path(output_dir) if output_dir else self.base_dir / "output"
         self.dpi = dpi
+        self.paths = self._setup_paths()
+
+    def _setup_paths(self) -> dict:
+        """
+        Ensure the expected directory layout exists and return useful paths.
+        """
+        paths = {
+            "base": self.base_dir,
+            "input": self.input_dir,
+            "output": self.output_dir,
+            "ocr_out": self.output_dir / "ocr",
+            "md_out": self.output_dir / "markdown",
+            "split_out": self.output_dir / "splits",
+            "merge_out": self.output_dir / "merged",
+            "temp": self.base_dir / "temp",
+        }
+        for p in paths.values():
+            if isinstance(p, Path):
+                p.mkdir(parents=True, exist_ok=True)
+        return paths
 
     # ---- helpers ----
 

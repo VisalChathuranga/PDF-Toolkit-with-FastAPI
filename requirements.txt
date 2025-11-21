@@ -8,6 +8,5 @@ rapidocr-onnxruntime
 numpy
 opencv-python
 python-multipart
-python-jose[cryptography]
 pydantic
 requests
